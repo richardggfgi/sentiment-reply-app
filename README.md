@@ -1,1 +1,51 @@
-# sentiment-reply-app
+# AI Customer Sentiment & Auto-Draft Reply
+ระบบวิเคราะห์รีวิวลูกค้าและร่างคำตอบกลับร้านค้า · IT232 AI for IT · Final Project
+
+วิเคราะห์รีวิวลูกค้า (อารมณ์ บวก/กลาง/ลบ · แง่มุมสินค้า · ความเร่งด่วน) แล้วร่างคำตอบตามโทนและกฎของร้าน
+แอดมินตรวจ แก้ หรือกด "เขียนใหม่" ก่อนอนุมัติทุกครั้ง (Human-in-the-loop)
+
+## วิธีรัน (Windows)
+1. แตกไฟล์ zip
+2. ดับเบิลคลิก `run.bat` ครั้งแรกจะติดตั้ง Python 3.12 และแพ็กเกจให้ (ใช้เวลาไม่กี่นาที) แล้วเปิดเบราว์เซอร์ที่ http://localhost:8501
+3. ในแถบซ้าย หัวข้อ **Cloud API** ใส่ Endpoint, Model ID และ API key แล้วกด "ทดสอบการเชื่อมต่อ" และ "บันทึกการเชื่อมต่อ"
+   - ใช้ Gemini ได้: Endpoint `https://generativelanguage.googleapis.com/v1beta/openai` · Model `gemini-2.5-flash` · คีย์จาก aistudio.google.com
+   - หรือบริการใดก็ได้ที่รองรับรูปแบบ OpenAI `/chat/completions`
+4. แท็บแรก: อัปโหลด `sample_reviews.csv` หรือ `restaurant_reviews_150.tsv` แล้วกด "เริ่มวิเคราะห์"
+
+ถ้าไม่ใส่ API key แอปจะอยู่ใน **โหมดเดโม** (ใช้คำสำคัญง่ายๆ ไม่ใช่ AI) ไว้ดูหน้าตาเท่านั้น
+
+### วิธีรันแบบอื่น (มี Python อยู่แล้ว / macOS / Linux)
+```
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## ไฟล์ในโปรเจกต์
+| ไฟล์ | หน้าที่ |
+|---|---|
+| `app.py` | หน้าเว็บ Streamlit: ตั้งค่าร้าน, คิวรีวิว, แดชบอร์ด |
+| `core.py` | เรียก AI ผ่าน API แบบ OpenAI-compatible, สร้าง System Prompt, แปลงผลเป็น JSON |
+| `shop_config.py` | โทนการตอบ กฎของร้าน และตัวอย่าง Few-shot |
+| `settings_store.py` | บันทึกการตั้งค่า (API key เข้ารหัสด้วย Windows DPAPI ไม่ได้เก็บไว้ในโฟลเดอร์นี้) |
+| `evaluate.py`, `evaluate.bat`, `evaluate_th.bat` | วัดความแม่นยำของ Sentiment เทียบกับป้ายจริง (ชุดอังกฤษ / ชุดไทย) |
+| `finetune_wangchanberta.ipynb` | Notebook สำหรับ Google Colab: fine-tune WangchanBERTa ด้วยข้อมูล Wisesight |
+| `sample_reviews.csv` | รีวิวตัวอย่าง 12 รีวิว (เขียนเองเพื่อทดสอบหน้าแอป) |
+| `restaurant_reviews_150.tsv` | รีวิวร้านอาหารภาษาอังกฤษ 150 รีวิว (บวก 75 / ลบ 75) ใช้วัดผล |
+| `restaurant_reviews_150_th.tsv` | รีวิวชุดเดียวกันที่เขียนใหม่เป็นภาษาไทยแบบรีวิวจริง ป้ายเดิม |
+
+## ผลการวัด
+| การทดสอบ | ผล |
+|---|---|
+| LLM ในแอป (gpt-6-luna) กับรีวิวร้านอาหารภาษาไทย 150 รีวิว | Accuracy 95.3% (เฉลี่ย 1.6 วินาทีต่อรีวิว) |
+| LLM ในแอป กับรีวิวต้นฉบับภาษาอังกฤษ 150 รีวิว | Accuracy 96.7% |
+| WangchanBERTa ก่อน fine-tune (ชุดทดสอบ Wisesight 1,161 ข้อความ) | Accuracy 41.9% |
+| Baseline TF-IDF + Logistic Regression (ชุดเดียวกัน) | Accuracy 85.5% |
+| WangchanBERTa หลัง fine-tune (ชุดเดียวกัน) | Accuracy 88.0% · Macro-F1 87.7% |
+
+Fine-tune ด้วย 8,000 ข้อความ 2 epochs บน Google Colab (Tesla T4) ใช้เวลาประมาณ 1.5 นาที
+
+## ข้อจำกัด
+- ข้อมูล fine-tune (Wisesight) เป็นข้อความโซเชียลมีเดียไทยทั่วไป ไม่ใช่รีวิวสินค้าโดยตรง
+- โมเดลที่ fine-tune แยกได้แค่บวก/ลบ และไม่ได้ต่อเข้ากับแอป (แอปใช้ LLM ผ่าน API)
+- ไฟล์รีวิวร้านอาหารไม่มีป้าย "กลาง" รีวิวที่ AI ตอบว่ากลางจึงนับเป็นผิด
+- รับรีวิวจากไฟล์ CSV/TSV ยังไม่ได้ดึงจาก Shopee/Lazada อัตโนมัติ
