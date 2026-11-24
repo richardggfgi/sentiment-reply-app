@@ -1,0 +1,16 @@
+[theme]
+base = "light"
+primaryColor = "#2d57d8"
+backgroundColor = "#f3f0ff"
+secondaryBackgroundColor = "#e3ebff"
+textColor = "#1a1e4a"
+borderColor = "#2a2f66"
+baseRadius = "full"
+font = "'Noto Sans Thai':https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600&display=swap"
+headingFont = "Kanit:https://fonts.googleapis.com/css2?family=Kanit:wght@500;600;700&display=swap"
+
+[theme.sidebar]
+backgroundColor = "#e6e2ff"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1a1e4a"
+borderColor = "#2a2f66"
