@@ -72,7 +72,9 @@ EXAMPLES = [
 
 
 def apply_particle(text: str, particle: str) -> str:
-    """แปลงคำลงท้ายในตัวอย่างให้ตรงกับที่ร้านเลือก (ค่ะ/ครับ)"""
+    """แปลงคำลงท้ายในตัวอย่างให้ตรงกับที่ร้านเลือก (ค่ะ/ครับ หรือ "" = ไม่ใช้คำลงท้าย)"""
+    if not particle:
+        return text.replace("นะคะ", "นะ").replace(" ค่ะ", "").replace("ค่ะ", "")
     if particle == "ครับ":
         return text.replace("นะคะ", "นะครับ").replace("ค่ะ", "ครับ")
     return text

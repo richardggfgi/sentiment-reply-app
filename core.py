@@ -54,6 +54,8 @@ def build_system_prompt(shop: dict | None = None) -> str:
     shop = {**DEFAULT_SHOP, **(shop or {})}
     particle = shop["particle"]
     tone = TONE_PRESETS.get(shop["tone"], TONE_PRESETS[DEFAULT_SHOP["tone"]])
+    particle_rule = (f'- ลงท้ายประโยคด้วย "{particle}" (เช่น {apply_particle("ค่ะ / นะคะ", particle)})' if particle
+                     else "- ไม่ใช้คำลงท้าย ค่ะ/ครับ/นะคะ/นะครับ เขียนให้สุภาพและเป็นกลาง")
     examples = "\n\n".join(
         f"รีวิว: {e['review']}\nผลลัพธ์: "
         + json.dumps({**e["output"], "reply": apply_particle(e["output"]["reply"], particle)}, ensure_ascii=False)
@@ -66,7 +68,7 @@ def build_system_prompt(shop: dict | None = None) -> str:
 
 โทนการตอบ ({shop['tone']}):
 {tone}
-- ลงท้ายประโยคด้วย "{particle}" (เช่น {apply_particle('ค่ะ / นะคะ', particle)})
+{particle_rule}
 
 กฎที่ต้องทำตาม:
 {RULES}{extra_block}
@@ -104,7 +106,7 @@ _NEG = ["แตก", "เสีย", "ช้า", "ผิดหวัง", "ไ�
 _POS = ["ดี", "ชอบ", "ประทับใจ", "เร็ว", "ไว", "สวย", "ใส", "คุ้ม"]
 
 
-def _mock(text: str) -> dict:
+def _mock(text: str, particle: str = "ค่ะ") -> dict:
     neg = sum(w in text for w in _NEG)
     pos = sum(w in text for w in _POS)
     if neg > pos:
@@ -116,7 +118,11 @@ def _mock(text: str) -> dict:
     else:
         s, u = "neutral", "low"
         reply = "ขอบคุณที่ให้ความเห็นนะคะ ทางร้านจะนำไปปรับปรุงค่ะ"
-    return {"sentiment": s, "aspects": ["other"], "urgency": u, "reply": "[DEMO] " + reply}
+    return {"sentiment": s, "aspects": ["other"], "urgency": u, "reply": "[DEMO] " + apply_particle(reply, particle)}
+
+
+def _particle(conn: dict | None) -> str:
+    return {**DEFAULT_SHOP, **((conn or {}).get("shop") or {})}["particle"]
 
 
 # ---------------- main ----------------
@@ -125,7 +131,7 @@ def analyze_review(conn: dict | None, text: str, rating=None, temperature: float
     avoid = คำตอบเดิม (ตอนกด "สร้างใหม่") ให้ AI เขียนเวอร์ชันที่ใช้ถ้อยคำต่างไป
     คืน dict: sentiment, aspects, urgency, reply, error (True ถ้าเรียก AI ไม่สำเร็จ)"""
     if not conn or not conn.get("api_key"):
-        return {**_mock(text), "error": False}
+        return {**_mock(text, _particle(conn)), "error": False}
     user_msg = f"รีวิว (ดาว {rating if rating == rating and rating else '-'}): {text}"
     if avoid:
         user_msg += f"\n\nคำตอบเดิมที่แอดมินไม่เลือก: {avoid}\nเขียน reply ใหม่ที่ใช้ถ้อยคำและโครงประโยคต่างจากเดิมชัดเจน แต่ยังทำตามโทนและกฎเหมือนเดิม"
@@ -159,7 +165,7 @@ def analyze_review(conn: dict | None, text: str, rating=None, temperature: float
         except Exception as e:  # JSON เพี้ยน / key ผิด ฯลฯ -> ไม่ต้องลองซ้ำ
             last_err = e
             break
-    out = _mock(text)
+    out = _mock(text, _particle(conn))
     out["reply"] = f"[ERROR: {str(last_err)[:300]}] " + out["reply"]
     return {**out, "error": True}
 

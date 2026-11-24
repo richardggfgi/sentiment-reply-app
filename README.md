@@ -24,6 +24,7 @@ streamlit run app.py
 | ไฟล์ | หน้าที่ |
 |---|---|
 | `app.py` | หน้าเว็บ Streamlit: ตั้งค่าร้าน, คิวรีวิว, แดชบอร์ด |
+| `theme.py`, `.streamlit/config.toml` | หน้าตาแอป (ธีมเดียวกับสไลด์ของกลุ่ม) |
 | `core.py` | เรียก AI ผ่าน API แบบ OpenAI-compatible, สร้าง System Prompt, แปลงผลเป็น JSON |
 | `shop_config.py` | โทนการตอบ กฎของร้าน และตัวอย่าง Few-shot |
 | `settings_store.py` | บันทึกการตั้งค่า (API key เข้ารหัสด้วย Windows DPAPI ไม่ได้เก็บไว้ในโฟลเดอร์นี้) |
