@@ -1,4 +1,4 @@
-"""บันทึก endpoint / model / API key ไว้ในเครื่อง
+"""บันทึก provider / endpoint / model / API key ไว้ในเครื่อง
 - Windows: เข้ารหัส API key ด้วย DPAPI (ผูกกับบัญชี Windows ที่ล็อกอินอยู่ คนอื่น/เครื่องอื่นถอดไม่ได้)
 - OS อื่น: ไม่บันทึก key (ต้องใส่ใหม่ทุกครั้ง)"""
 import base64
@@ -46,10 +46,11 @@ def _decrypt_key(blob: str) -> str:
 
 # ---------------- public ----------------
 def load_config() -> dict:
-    """คืน {"endpoint", "model", "api_key"} (api_key = "" ถ้าไม่มี/ถอดไม่ได้)"""
-    cfg = {"endpoint": "", "model": "", "api_key": "", "shop": {}}
+    """คืน {"provider", "endpoint", "model", "api_key", "shop"} (api_key = "" ถ้าไม่มี/ถอดไม่ได้)"""
+    cfg = {"provider": "", "endpoint": "", "model": "", "api_key": "", "shop": {}}
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        cfg["provider"] = data.get("provider", "")
         cfg["endpoint"] = data.get("endpoint", "")
         cfg["model"] = data.get("model", "")
         cfg["shop"] = data.get("shop", {}) or {}
@@ -60,14 +61,14 @@ def load_config() -> dict:
     return cfg
 
 
-def save_config(endpoint: str, model: str, api_key: str | None) -> bool:
+def save_config(endpoint: str, model: str, api_key: str | None, provider: str = "") -> bool:
     """api_key=None/"" = เก็บ key เดิมไว้  คืน True ถ้า key ถูกบันทึก (เข้ารหัสแล้ว)"""
     old = {}
     try:
         old = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     except Exception:
         pass
-    data = {**old, "endpoint": endpoint, "model": model, "api_key_enc": old.get("api_key_enc")}
+    data = {**old, "provider": provider, "endpoint": endpoint, "model": model, "api_key_enc": old.get("api_key_enc")}
     if api_key:
         data["api_key_enc"] = _encrypt_key(api_key)
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)

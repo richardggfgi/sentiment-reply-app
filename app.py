@@ -3,8 +3,8 @@ import time
 import pandas as pd
 import streamlit as st
 
-from core import (analyze_review, analyze_many, list_models, normalize_endpoint, read_reviews,
-                  URGENCY_ORDER, DEFAULT_ENDPOINT, DEFAULT_MODEL)
+from core import (analyze_review, analyze_many, list_models, normalize_endpoint, read_reviews, provider_of,
+                  URGENCY_ORDER, PROVIDERS, PROVIDER_DEFAULTS)
 from settings_store import load_config, save_config, save_shop, IS_WINDOWS
 from shop_config import DEFAULT_SHOP, TONE_PRESETS, PARTICLES
 from theme import apply_theme, hero, review_head, said, about_html, sentiment_html, bars_html
@@ -25,8 +25,11 @@ PAGE_SIZE = 10
 # ---------------- state ----------------
 if "saved" not in ss:
     ss.saved = load_config()
-    ss.endpoint = ss.saved["endpoint"] or DEFAULT_ENDPOINT
-    ss.model_id = ss.saved["model"] or DEFAULT_MODEL
+    # เริ่มที่ Claude (Anthropic) ถ้ายังไม่เคยบันทึก ถ้าเคยบันทึก endpoint ไว้แต่ไม่มี provider = config เดิม (OpenAI-compatible)
+    ss.provider = (provider_of(ss.saved) if ss.saved["provider"] or ss.saved["endpoint"] else "anthropic")
+    _ep, _md = PROVIDER_DEFAULTS[ss.provider]
+    ss.endpoint = ss.saved["endpoint"] or _ep
+    ss.model_id = ss.saved["model"] or _md
     ss.model_list = []
     ss.df = None          # ผลวิเคราะห์
     ss.src = None         # รีวิวที่โหลดมา (ยังไม่วิเคราะห์)
@@ -51,6 +54,17 @@ def _pick_model():
     ss.model_id = ss.model_pick
 
 
+def _switch_provider():
+    """เปลี่ยนแบบ API: เปลี่ยน endpoint / โมเดลเป็นค่าเริ่มต้นของแบบใหม่ ถ้ายังเป็นค่าของแบบเดิมหรือว่างอยู่"""
+    defaults = {v for pair in PROVIDER_DEFAULTS.values() for v in pair}
+    ep, md = PROVIDER_DEFAULTS[ss.provider]
+    if not ss.endpoint.strip() or ss.endpoint in defaults:
+        ss.endpoint = ep
+    if not ss.model_id.strip() or ss.model_id in defaults:
+        ss.model_id = md
+    ss.model_list = []
+
+
 # ---------------- sidebar ----------------
 with st.sidebar:
     with st.expander("ตั้งค่าร้าน", expanded=True):
@@ -72,7 +86,11 @@ with st.sidebar:
         st.caption("คำตอบที่ร่างหลังจากนี้จะใช้การตั้งค่านี้ กด เขียนใหม่ ในคิวรีวิวเพื่อดูโทนใหม่กับรีวิวเดิม")
 
     st.subheader("Cloud API")
-    st.caption("ใส่โดเมนหรือ API URL ได้เลย ระบบเติม https:// และใช้ /v1 หากไม่ได้ระบุ path")
+    st.radio("แบบ API", list(PROVIDERS), format_func=PROVIDERS.get, key="provider", horizontal=True,
+             on_change=_switch_provider,
+             help="Claude (Anthropic) = ใช้ API key จาก Claude Console (ส่งด้วย x-api-key)\n\n"
+                  "OpenAI-compatible = Gemini, OpenAI หรือ gateway ที่ใช้ /chat/completions (ส่งด้วย Bearer)")
+    st.caption("ใส่แค่โดเมนก็ได้ ระบบเติม https:// และ path ให้ (Claude: /v1/messages · OpenAI-compatible: /v1/chat/completions)")
     st.text_input("API endpoint", key="endpoint")
     st.text_input("Model ID", key="model_id")
     saved_key = ss.saved["api_key"]
@@ -80,7 +98,8 @@ with st.sidebar:
                                placeholder="ตั้งค่าแล้ว — เว้นว่างเพื่อใช้ key เดิม" if saved_key else "วาง API key")
     api_key = api_key_in.strip() or saved_key
     # ไม่มี key ก็ส่ง conn ไปได้ (core จะใช้โหมดเดโม แต่ยังใช้คำลงท้ายตามร้าน)
-    conn = {"endpoint": ss.endpoint, "model": ss.model_id, "api_key": api_key, "shop": shop_now()}
+    conn = {"provider": ss.provider, "endpoint": ss.endpoint, "model": ss.model_id, "api_key": api_key,
+            "shop": shop_now()}
 
     c1, c2 = st.columns(2)
     if c1.button("ดึงรายชื่อโมเดล", width="stretch"):
@@ -88,7 +107,7 @@ with st.sidebar:
             st.error("ใส่ API key ก่อน")
         else:
             try:
-                ss.model_list = list_models(ss.endpoint, api_key)
+                ss.model_list = list_models(ss.endpoint, api_key, ss.provider)
                 st.success(f"พบ {len(ss.model_list)} โมเดล")
             except Exception as e:
                 ss.model_list = []
@@ -111,7 +130,7 @@ with st.sidebar:
 
     if st.button("บันทึกการเชื่อมต่อ", type="primary", width="stretch"):
         try:
-            key_saved = save_config(ss.endpoint, ss.model_id, api_key_in.strip() or None)
+            key_saved = save_config(ss.endpoint, ss.model_id, api_key_in.strip() or None, ss.provider)
             ss.saved = load_config()
             st.success("บันทึกแล้ว" + ("" if key_saved else " (ไม่ได้บันทึก key)"))
         except Exception as e:
@@ -123,7 +142,7 @@ with st.sidebar:
     workers = st.slider("จำนวนคำขอพร้อมกัน", 1, 8, 4,
                         help="มากขึ้น = เร็วขึ้น แต่ถ้า API มีลิมิตต่ำ (เช่น Gemini ฟรี) อาจโดน rate limit ให้ลดลง")
     if api_key:
-        st.info(f"ใช้: `{ss.model_id}`\n\n{normalize_endpoint(ss.endpoint)}")
+        st.info(f"ใช้: `{ss.model_id}` · {PROVIDERS[ss.provider]}\n\n{normalize_endpoint(ss.endpoint, ss.provider)}")
     else:
         st.warning("โหมดเดโม: ยังไม่มี API key (ไม่ใช่ AI จริง)")
 

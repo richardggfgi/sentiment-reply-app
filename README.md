@@ -7,9 +7,9 @@
 ## วิธีรัน (Windows)
 1. แตกไฟล์ zip
 2. ดับเบิลคลิก `run.bat` ครั้งแรกจะติดตั้ง Python 3.12 และแพ็กเกจให้ (ใช้เวลาไม่กี่นาที) แล้วเปิดเบราว์เซอร์ที่ http://localhost:8501
-3. ในแถบซ้าย หัวข้อ **Cloud API** ใส่ Endpoint, Model ID และ API key แล้วกด "ทดสอบการเชื่อมต่อ" และ "บันทึกการเชื่อมต่อ"
-   - ใช้ Gemini ได้: Endpoint `https://generativelanguage.googleapis.com/v1beta/openai` · Model `gemini-2.5-flash` · คีย์จาก aistudio.google.com
-   - หรือบริการใดก็ได้ที่รองรับรูปแบบ OpenAI `/chat/completions`
+3. ในแถบซ้าย หัวข้อ **Cloud API** เลือกแบบ API ใส่ Endpoint, Model ID และ API key แล้วกด "ทดสอบเชื่อมต่อ" และ "บันทึกการเชื่อมต่อ"
+   - **Claude (Anthropic)** (ค่าเริ่มต้น): Endpoint `https://api.anthropic.com` · Model เช่น `claude-sonnet-5-5` · คีย์จาก Claude Console (ส่งด้วย header `x-api-key`) ใช้กับ proxy ที่รองรับรูปแบบ Anthropic ได้ด้วย
+   - **OpenAI-compatible**: เช่น Gemini Endpoint `https://generativelanguage.googleapis.com/v1beta/openai` · Model `gemini-2.5-flash` · คีย์จาก aistudio.google.com หรือบริการใดก็ได้ที่รองรับ `/chat/completions`
 4. แท็บแรก: อัปโหลด `sample_reviews.csv` หรือ `restaurant_reviews_150.tsv` แล้วกด "เริ่มวิเคราะห์"
 
 ถ้าไม่ใส่ API key แอปจะอยู่ใน **โหมดเดโม** (ใช้คำสำคัญง่ายๆ ไม่ใช่ AI) ไว้ดูหน้าตาเท่านั้น
@@ -25,7 +25,7 @@ streamlit run app.py
 |---|---|
 | `app.py` | หน้าเว็บ Streamlit: ตั้งค่าร้าน, คิวรีวิว, แดชบอร์ด |
 | `theme.py`, `.streamlit/config.toml` | หน้าตาแอป (ธีมเดียวกับสไลด์ของกลุ่ม) |
-| `core.py` | เรียก AI ผ่าน API แบบ OpenAI-compatible, สร้าง System Prompt, แปลงผลเป็น JSON |
+| `core.py` | เรียก AI ผ่าน Claude API (Anthropic Messages) หรือ API แบบ OpenAI-compatible, สร้าง System Prompt, แปลงผลเป็น JSON |
 | `shop_config.py` | โทนการตอบ กฎของร้าน และตัวอย่าง Few-shot |
 | `settings_store.py` | บันทึกการตั้งค่า (API key เข้ารหัสด้วย Windows DPAPI ไม่ได้เก็บไว้ในโฟลเดอร์นี้) |
 | `evaluate.py`, `evaluate.bat`, `evaluate_th.bat` | วัดความแม่นยำของ Sentiment เทียบกับป้ายจริง (ชุดอังกฤษ / ชุดไทย) |

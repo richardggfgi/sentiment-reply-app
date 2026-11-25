@@ -1,6 +1,7 @@
 """แกนของระบบ: วิเคราะห์รีวิว 1 อัน -> sentiment, aspects, urgency, ร่างคำตอบ
-เรียก AI ผ่าน API แบบ OpenAI-compatible (/chat/completions)
-ใช้ได้ทั้ง Gemini (endpoint ด้านล่าง), OpenAI, หรือ gateway อื่นที่รองรับรูปแบบเดียวกัน"""
+เรียก AI ได้ 2 แบบ:
+- Claude (Anthropic): /v1/messages ยืนยันตัวตนด้วย x-api-key (Claude Console หรือ proxy ที่รองรับรูปแบบเดียวกัน)
+- OpenAI-compatible: /chat/completions ยืนยันตัวตนด้วย Bearer (Gemini, OpenAI หรือ gateway อื่น)"""
 import json
 import re
 import time
@@ -14,6 +15,12 @@ from shop_config import DEFAULT_SHOP, TONE_PRESETS, RULES, EXAMPLES, apply_parti
 
 DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 DEFAULT_MODEL = "gemini-2.5-flash"
+ANTHROPIC_ENDPOINT = "https://api.anthropic.com"
+ANTHROPIC_MODEL = "claude-sonnet-5-5"
+ANTHROPIC_VERSION = "2023-06-01"
+PROVIDERS = {"anthropic": "Claude (Anthropic)", "openai": "OpenAI-compatible"}
+PROVIDER_DEFAULTS = {"anthropic": (ANTHROPIC_ENDPOINT, ANTHROPIC_MODEL), "openai": (DEFAULT_ENDPOINT, DEFAULT_MODEL)}
+MAX_TOKENS = 1024
 ASPECTS = ["quality", "shipping", "packaging", "price", "service", "other"]
 URGENCY_ORDER = {"high": 0, "medium": 1, "low": 2}
 TIMEOUT = 45          # วินาทีต่อคำขอ
@@ -21,13 +28,34 @@ RETRIES = 2           # ลองใหม่เมื่อโดน rate limit
 
 
 # ---------------- endpoint helpers ----------------
-def normalize_endpoint(url: str) -> str:
-    """ใส่แค่โดเมนก็ได้: เติม https:// และ /v1 ถ้าไม่มี path แล้วต่อท้าย /chat/completions"""
+def _base(url: str) -> str:
     url = (url or "").strip().rstrip("/")
+    if url and not re.match(r"^https?://", url):
+        url = "https://" + url
+    return url
+
+
+def provider_of(conn: dict | None) -> str:
+    """ถ้าไม่ได้ระบุ provider: endpoint ของ anthropic.com = anthropic นอกนั้น = openai (เข้ากับ config เดิม)"""
+    p = (conn or {}).get("provider")
+    if p in PROVIDERS:
+        return p
+    return "anthropic" if "anthropic.com" in ((conn or {}).get("endpoint") or "") else "openai"
+
+
+def normalize_endpoint(url: str, provider: str = "openai") -> str:
+    """ใส่แค่โดเมนก็ได้
+    openai: เติม https:// และ /v1 ถ้าไม่มี path แล้วต่อท้าย /chat/completions
+    anthropic: เติม https:// แล้วต่อท้าย /v1/messages"""
+    if provider == "anthropic":
+        url = _base(url) or ANTHROPIC_ENDPOINT
+        for tail in ("/messages", "/v1"):
+            if url.endswith(tail):
+                url = url[: -len(tail)]
+        return url + "/v1/messages"
+    url = _base(url)
     if not url:
         return DEFAULT_ENDPOINT
-    if not re.match(r"^https?://", url):
-        url = "https://" + url
     if urlparse(url).path in ("", "/"):
         url += "/v1"
     if not url.endswith("/chat/completions"):
@@ -35,13 +63,21 @@ def normalize_endpoint(url: str) -> str:
     return url
 
 
-def models_url(endpoint: str) -> str:
+def models_url(endpoint: str, provider: str = "openai") -> str:
+    if provider == "anthropic":
+        return normalize_endpoint(endpoint, provider)[: -len("/messages")] + "/models?limit=100"
     return normalize_endpoint(endpoint)[: -len("/chat/completions")] + "/models"
 
 
-def list_models(endpoint: str, api_key: str) -> list[str]:
+def auth_headers(api_key: str, provider: str = "openai") -> dict:
+    if provider == "anthropic":
+        return {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def list_models(endpoint: str, api_key: str, provider: str = "openai") -> list[str]:
     """ดึงรายชื่อโมเดลจาก endpoint (raise error พร้อมข้อความจาก server ถ้าไม่สำเร็จ)"""
-    r = requests.get(models_url(endpoint), headers={"Authorization": f"Bearer {api_key}"}, timeout=TIMEOUT)
+    r = requests.get(models_url(endpoint, provider), headers=auth_headers(api_key, provider), timeout=TIMEOUT)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     ids = [m.get("id", "") for m in r.json().get("data", [])]
@@ -127,7 +163,7 @@ def _particle(conn: dict | None) -> str:
 
 # ---------------- main ----------------
 def analyze_review(conn: dict | None, text: str, rating=None, temperature: float = 0.4, avoid: str | None = None) -> dict:
-    """conn = {"endpoint", "model", "api_key", "shop"?} หรือ None (โหมดเดโม)
+    """conn = {"provider"?, "endpoint", "model", "api_key", "shop"?} หรือ None (โหมดเดโม)
     avoid = คำตอบเดิม (ตอนกด "สร้างใหม่") ให้ AI เขียนเวอร์ชันที่ใช้ถ้อยคำต่างไป
     คืน dict: sentiment, aspects, urgency, reply, error (True ถ้าเรียก AI ไม่สำเร็จ)"""
     if not conn or not conn.get("api_key"):
@@ -135,30 +171,41 @@ def analyze_review(conn: dict | None, text: str, rating=None, temperature: float
     user_msg = f"รีวิว (ดาว {rating if rating == rating and rating else '-'}): {text}"
     if avoid:
         user_msg += f"\n\nคำตอบเดิมที่แอดมินไม่เลือก: {avoid}\nเขียน reply ใหม่ที่ใช้ถ้อยคำและโครงประโยคต่างจากเดิมชัดเจน แต่ยังทำตามโทนและกฎเหมือนเดิม"
-    body = {
-        "model": conn.get("model") or DEFAULT_MODEL,
-        "temperature": temperature,
-        "messages": [
-            {"role": "system", "content": build_system_prompt(conn.get("shop"))},
-            {"role": "user", "content": user_msg},
-        ],
-    }
+    provider = provider_of(conn)
+    system = build_system_prompt(conn.get("shop"))
+    if provider == "anthropic":
+        body = {
+            "model": conn.get("model") or ANTHROPIC_MODEL,
+            "max_tokens": MAX_TOKENS,
+            "temperature": temperature,
+            "system": system,
+            "messages": [{"role": "user", "content": user_msg}],
+        }
+    else:
+        body = {
+            "model": conn.get("model") or DEFAULT_MODEL,
+            "temperature": temperature,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
+        }
+    url, headers = normalize_endpoint(conn.get("endpoint"), provider), auth_headers(conn["api_key"], provider)
     last_err = None
     for attempt in range(RETRIES + 1):
         try:
-            r = requests.post(
-                normalize_endpoint(conn.get("endpoint")),
-                headers={"Authorization": f"Bearer {conn['api_key']}", "Content-Type": "application/json"},
-                json=body,
-                timeout=TIMEOUT,
-            )
-            if r.status_code == 429 or r.status_code >= 500:
+            r = requests.post(url, headers=headers, json=body, timeout=TIMEOUT)
+            if r.status_code in (429, 529) or r.status_code >= 500:
                 last_err = RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
                 time.sleep(2 * (attempt + 1))
                 continue
+            if r.status_code == 400 and "temperature" in r.text and "temperature" in body:
+                body.pop("temperature")   # บางโมเดลไม่รับ temperature -> ส่งใหม่โดยไม่ใส่
+                continue
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
-            content = r.json()["choices"][0]["message"]["content"]
+            data = r.json()
+            if provider == "anthropic":
+                content = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+            else:
+                content = data["choices"][0]["message"]["content"]
             return {**_normalize(_clean_json(content)), "error": False}
         except requests.Timeout:
             last_err = RuntimeError(f"timeout เกิน {TIMEOUT} วินาที")
