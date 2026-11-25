@@ -1,6 +1,6 @@
 """แกนของระบบ: วิเคราะห์รีวิว 1 อัน -> sentiment, aspects, urgency, ร่างคำตอบ
 เรียก AI ได้ 2 แบบ:
-- Claude (Anthropic): /v1/messages ยืนยันตัวตนด้วย x-api-key (Claude Console หรือ proxy ที่รองรับรูปแบบเดียวกัน)
+- Claude (Anthropic): /v1/messages ยืนยันตัวตนด้วย Authorization: Bearer (ถ้าไม่ผ่านจะลอง x-api-key ให้อัตโนมัติ)
 - OpenAI-compatible: /chat/completions ยืนยันตัวตนด้วย Bearer (Gemini, OpenAI หรือ gateway อื่น)"""
 import json
 import re
@@ -16,8 +16,11 @@ from shop_config import DEFAULT_SHOP, TONE_PRESETS, RULES, EXAMPLES, apply_parti
 DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 DEFAULT_MODEL = "gemini-2.5-flash"
 ANTHROPIC_ENDPOINT = "https://api.anthropic.com"
-ANTHROPIC_MODEL = "claude-sonnet-5-5"
-ANTHROPIC_VERSION = "2023-06-01"
+ANTHROPIC_MODEL = "claude-haiku-5-5"       # ค่าเริ่มต้น: เร็วและประหยัด
+ANTHROPIC_VERSION = "2026-10-21"      # เวอร์ชันล่าสุดตามเอกสาร Claude API
+LEGACY_VERSION = "2023-06-01"         # สำรอง เผื่อ proxy ยังไม่รองรับเวอร์ชันใหม่
+AUTH_MODES = ("bearer", "x-api-key")  # Bearer = วิธีหลัก, x-api-key = วิธีเดิมที่ยังรองรับ
+_working = {}                         # host -> (auth, version) ที่ใช้ได้แล้ว จะได้ไม่ต้องลองใหม่ทุกครั้ง
 PROVIDERS = {"anthropic": "Claude (Anthropic)", "openai": "OpenAI-compatible"}
 PROVIDER_DEFAULTS = {"anthropic": (ANTHROPIC_ENDPOINT, ANTHROPIC_MODEL), "openai": (DEFAULT_ENDPOINT, DEFAULT_MODEL)}
 MAX_TOKENS = 1024
@@ -35,6 +38,18 @@ def _base(url: str) -> str:
     return url
 
 
+def strip_api_path(url: str) -> str:
+    """เหลือแค่ฐาน URL เช่น https://claude.furi.moe/v1/chat/completions -> https://claude.furi.moe"""
+    url = _base(url)
+    changed = True
+    while changed:
+        changed = False
+        for tail in ("/chat/completions", "/messages", "/v1"):
+            if url.endswith(tail):
+                url, changed = url[: -len(tail)].rstrip("/"), True
+    return url
+
+
 def provider_of(conn: dict | None) -> str:
     """ถ้าไม่ได้ระบุ provider: endpoint ของ anthropic.com = anthropic นอกนั้น = openai (เข้ากับ config เดิม)"""
     p = (conn or {}).get("provider")
@@ -48,14 +63,12 @@ def normalize_endpoint(url: str, provider: str = "openai") -> str:
     openai: เติม https:// และ /v1 ถ้าไม่มี path แล้วต่อท้าย /chat/completions
     anthropic: เติม https:// แล้วต่อท้าย /v1/messages"""
     if provider == "anthropic":
-        url = _base(url) or ANTHROPIC_ENDPOINT
-        for tail in ("/messages", "/v1"):
-            if url.endswith(tail):
-                url = url[: -len(tail)]
-        return url + "/v1/messages"
+        return (strip_api_path(url) or ANTHROPIC_ENDPOINT) + "/v1/messages"
     url = _base(url)
     if not url:
         return DEFAULT_ENDPOINT
+    if url.endswith("/v1/messages"):          # ใส่ URL ของแบบ Claude มา -> เปลี่ยนเป็นของ OpenAI
+        url = url[: -len("/messages")]
     if urlparse(url).path in ("", "/"):
         url += "/v1"
     if not url.endswith("/chat/completions"):
@@ -69,15 +82,39 @@ def models_url(endpoint: str, provider: str = "openai") -> str:
     return normalize_endpoint(endpoint)[: -len("/chat/completions")] + "/models"
 
 
-def auth_headers(api_key: str, provider: str = "openai") -> dict:
+def auth_headers(api_key: str, provider: str = "openai", auth: str = "bearer", version: str = ANTHROPIC_VERSION) -> dict:
     if provider == "anthropic":
-        return {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
+        h = {"anthropic-version": version, "Content-Type": "application/json"}
+        h.update({"Authorization": f"Bearer {api_key}"} if auth == "bearer" else {"x-api-key": api_key})
+        return h
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def _send(method: str, url: str, api_key: str, provider: str, **kw) -> requests.Response:
+    """ส่งคำขอ ถ้าเป็น Claude จะลอง Bearer ก่อน ถ้าโดนปฏิเสธ (401/403) ลอง x-api-key
+    และถ้าเวอร์ชันใหม่ใช้ไม่ได้ ลองเวอร์ชันเก่า แล้วจำวิธีที่ใช้ได้ไว้"""
+    if provider != "anthropic":
+        return requests.request(method, url, headers=auth_headers(api_key), timeout=TIMEOUT, **kw)
+    host = urlparse(url).netloc
+    combos = [(a, v) for a in AUTH_MODES for v in (ANTHROPIC_VERSION, LEGACY_VERSION)]
+    if host in _working:
+        combos.remove(_working[host]); combos.insert(0, _working[host])
+    r = None
+    for auth, version in combos:
+        r = requests.request(method, url, headers=auth_headers(api_key, provider, auth, version), timeout=TIMEOUT, **kw)
+        if r.status_code in (401, 403):
+            continue
+        if r.status_code == 400 and "version" in r.text.lower():
+            continue
+        if r.status_code == 200:
+            _working[host] = (auth, version)
+        return r
+    return r
 
 
 def list_models(endpoint: str, api_key: str, provider: str = "openai") -> list[str]:
     """ดึงรายชื่อโมเดลจาก endpoint (raise error พร้อมข้อความจาก server ถ้าไม่สำเร็จ)"""
-    r = requests.get(models_url(endpoint, provider), headers=auth_headers(api_key, provider), timeout=TIMEOUT)
+    r = _send("GET", models_url(endpoint, provider), api_key, provider)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     ids = [m.get("id", "") for m in r.json().get("data", [])]
@@ -176,8 +213,7 @@ def analyze_review(conn: dict | None, text: str, rating=None, temperature: float
     if provider == "anthropic":
         body = {
             "model": conn.get("model") or ANTHROPIC_MODEL,
-            "max_tokens": MAX_TOKENS,
-            "temperature": temperature,
+            "max_tokens": MAX_TOKENS,   # API เวอร์ชันใหม่ไม่รับ temperature จึงไม่ส่ง
             "system": system,
             "messages": [{"role": "user", "content": user_msg}],
         }
@@ -187,11 +223,11 @@ def analyze_review(conn: dict | None, text: str, rating=None, temperature: float
             "temperature": temperature,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
         }
-    url, headers = normalize_endpoint(conn.get("endpoint"), provider), auth_headers(conn["api_key"], provider)
+    url = normalize_endpoint(conn.get("endpoint"), provider)
     last_err = None
     for attempt in range(RETRIES + 1):
         try:
-            r = requests.post(url, headers=headers, json=body, timeout=TIMEOUT)
+            r = _send("POST", url, conn["api_key"], provider, json=body)
             if r.status_code in (429, 529) or r.status_code >= 500:
                 last_err = RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
                 time.sleep(2 * (attempt + 1))

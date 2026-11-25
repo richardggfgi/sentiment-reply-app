@@ -8,9 +8,25 @@
 1. แตกไฟล์ zip
 2. ดับเบิลคลิก `run.bat` ครั้งแรกจะติดตั้ง Python 3.12 และแพ็กเกจให้ (ใช้เวลาไม่กี่นาที) แล้วเปิดเบราว์เซอร์ที่ http://localhost:8501
 3. ในแถบซ้าย หัวข้อ **Cloud API** เลือกแบบ API ใส่ Endpoint, Model ID และ API key แล้วกด "ทดสอบเชื่อมต่อ" และ "บันทึกการเชื่อมต่อ"
-   - **Claude (Anthropic)** (ค่าเริ่มต้น): Endpoint `https://api.anthropic.com` · Model เช่น `claude-sonnet-5-5` · คีย์จาก Claude Console (ส่งด้วย header `x-api-key`) ใช้กับ proxy ที่รองรับรูปแบบ Anthropic ได้ด้วย
+   - **Claude (Anthropic)** (ค่าเริ่มต้น): Endpoint `https://api.anthropic.com` · Model ค่าเริ่มต้น `claude-haiku-5-5` · คีย์จาก Claude Console (ส่งด้วย `Authorization: Bearer` ถ้าไม่ผ่านจะลอง `x-api-key` ให้อัตโนมัติ) ใช้กับ proxy ที่รองรับรูปแบบ Anthropic ได้ด้วย
    - **OpenAI-compatible**: เช่น Gemini Endpoint `https://generativelanguage.googleapis.com/v1beta/openai` · Model `gemini-2.5-flash` · คีย์จาก aistudio.google.com หรือบริการใดก็ได้ที่รองรับ `/chat/completions`
 4. แท็บแรก: อัปโหลด `sample_reviews.csv` หรือ `restaurant_reviews_150.tsv` แล้วกด "เริ่มวิเคราะห์"
+
+### ความปลอดภัยของ API key
+- key ที่พิมพ์ในแถบข้างอยู่แค่ในหน้านั้น ปิดหน้าแล้วหาย และ **ลบอัตโนมัติเมื่อครบ 12 ชั่วโมง** (มีปุ่ม "ลบ key ออกตอนนี้")
+- key ที่บันทึกในเครื่อง (Windows) เข้ารหัสไว้ และลบอัตโนมัติเมื่อครบ 12 ชั่วโมงเช่นกัน
+- **ห้ามใส่ key ในไฟล์โค้ดหรืออัปโหลดขึ้น GitHub**
+
+### ใส่ key ไว้ใน Streamlit Cloud (ไม่บังคับ)
+ให้คนที่เปิดลิงก์ใช้ AI จริงได้โดยไม่ต้องใส่ key เอง: share.streamlit.io → แอป → ⋮ → **Settings → Secrets** แล้ววาง
+```toml
+ANTHROPIC_API_KEY = "วาง key ตรงนี้"
+ANTHROPIC_ENDPOINT = "https://api.anthropic.com"   # ถ้าเป็น key ของ proxy ให้ใส่โดเมนของ proxy แทน
+ANTHROPIC_KEY_UNTIL = "2026-11-27 18:00"           # เวลาไทย ต้องไม่เกิน 12 ชม. จากตอนนี้ (บังคับ)
+```
+- ไม่ใส่ `ANTHROPIC_KEY_UNTIL`, เลยเวลาแล้ว หรือตั้งเกิน 12 ชม. = แอปไม่ใช้ key นี้
+- key ไม่แสดงบนหน้าเว็บ และส่งไปเฉพาะ endpoint ที่ตั้งไว้เท่านั้น (ถ้ามีคนเปลี่ยน endpoint จะไม่ส่ง key ไป)
+- ใช้ key ของระบบ = ล็อกโมเดลเป็น Haiku และวิเคราะห์ได้ครั้งละไม่เกิน 150 รีวิว (กันคนเอาไปเผาโควตา)
 
 ถ้าไม่ใส่ API key แอปจะอยู่ใน **โหมดเดโม** (ใช้คำสำคัญง่ายๆ ไม่ใช่ AI) ไว้ดูหน้าตาเท่านั้น
 

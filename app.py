@@ -1,17 +1,65 @@
 import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 
 from core import (analyze_review, analyze_many, list_models, normalize_endpoint, read_reviews, provider_of,
                   URGENCY_ORDER, PROVIDERS, PROVIDER_DEFAULTS)
-from settings_store import load_config, save_config, save_shop, IS_WINDOWS
+from settings_store import load_config, save_config, save_shop, forget_key, IS_WINDOWS, KEY_TTL_HOURS
 from shop_config import DEFAULT_SHOP, TONE_PRESETS, PARTICLES
 from theme import apply_theme, hero, review_head, said, about_html, sentiment_html, bars_html
 
 st.set_page_config(page_title="AI Review Reply · FANTASTIC III", page_icon="⭐", layout="wide")
 apply_theme()
 ss = st.session_state
+
+
+def _secret(name: str) -> str:
+    """อ่านค่าจาก Streamlit Secrets (ตั้งในหน้า Settings ของแอปบน Streamlit Cloud) ไม่มี = """""
+    try:
+        return str(st.secrets.get(name, "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _host(url: str) -> str:
+    return urlparse(normalize_endpoint(url, "anthropic")).netloc.lower()
+
+
+BKK = timezone(timedelta(hours=7))
+KEY_TTL = KEY_TTL_HOURS * 3600
+
+
+def _until(raw: str):
+    """อ่านเวลาเช่น 2026-11-27 18:00 (ไม่ใส่ timezone = เวลาไทย)"""
+    try:
+        d = datetime.fromisoformat(raw.strip())
+    except Exception:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=BKK)
+
+
+# key ของระบบ (ไม่บังคับ): ถ้าตั้งไว้ใน Secrets ผู้เข้าเว็บใช้ AI จริงได้โดยไม่ต้องใส่ key
+# - ส่ง key นี้ไปเฉพาะ endpoint ที่ตั้งไว้เท่านั้น ถ้ามีคนเปลี่ยน endpoint จะไม่ส่ง key ไปที่อื่น
+# - ต้องตั้งเวลาหมดอายุ (ANTHROPIC_KEY_UNTIL) ไม่เกิน 12 ชม. จากตอนนี้ เลยเวลาแล้วระบบเลิกใช้ key นี้
+# - ล็อกโมเดล (ค่าเริ่มต้น Haiku) และจำกัดจำนวนรีวิวต่อครั้ง กันคนเอาไปเผาโควตา
+SECRET_KEY = _secret("ANTHROPIC_API_KEY")
+SECRET_ENDPOINT = _secret("ANTHROPIC_ENDPOINT") or PROVIDER_DEFAULTS["anthropic"][0]
+SECRET_UNTIL = _until(_secret("ANTHROPIC_KEY_UNTIL"))
+SECRET_MODEL = _secret("ANTHROPIC_MODEL") or PROVIDER_DEFAULTS["anthropic"][1]
+SECRET_MAX_REVIEWS = 150
+
+
+def _secret_status() -> str:
+    """"" = ไม่มี key ของระบบ · ok · no-until · expired · too-long"""
+    if not SECRET_KEY:
+        return ""
+    if not SECRET_UNTIL:
+        return "no-until"
+    left = (SECRET_UNTIL - datetime.now(BKK)).total_seconds()
+    return "expired" if left <= 0 else "too-long" if left > KEY_TTL else "ok"
 
 SENT_ICON = {"positive": "🟢", "neutral": "🟡", "negative": "🔴"}
 SENT_TH = {"positive": "บวก", "neutral": "กลาง", "negative": "ลบ"}
@@ -28,6 +76,8 @@ if "saved" not in ss:
     # เริ่มที่ Claude (Anthropic) ถ้ายังไม่เคยบันทึก ถ้าเคยบันทึก endpoint ไว้แต่ไม่มี provider = config เดิม (OpenAI-compatible)
     ss.provider = (provider_of(ss.saved) if ss.saved["provider"] or ss.saved["endpoint"] else "anthropic")
     _ep, _md = PROVIDER_DEFAULTS[ss.provider]
+    if SECRET_KEY and ss.provider == "anthropic":
+        _ep = SECRET_ENDPOINT
     ss.endpoint = ss.saved["endpoint"] or _ep
     ss.model_id = ss.saved["model"] or _md
     ss.model_list = []
@@ -54,13 +104,32 @@ def _pick_model():
     ss.model_id = ss.model_pick
 
 
+def _key_changed():
+    ss.api_key_at = time.time() if ss.api_key_in.strip() else None
+
+
+def _clear_key():
+    ss.api_key_in, ss.api_key_at = "", None
+
+
 def _switch_provider():
     """เปลี่ยนแบบ API: เปลี่ยน endpoint / โมเดลเป็นค่าเริ่มต้นของแบบใหม่ ถ้ายังเป็นค่าของแบบเดิมหรือว่างอยู่"""
-    defaults = {v for pair in PROVIDER_DEFAULTS.values() for v in pair}
+    defaults = {v for pair in PROVIDER_DEFAULTS.values() for v in pair} | {SECRET_ENDPOINT}
     ep, md = PROVIDER_DEFAULTS[ss.provider]
-    if not ss.endpoint.strip() or ss.endpoint in defaults:
+    if SECRET_KEY and ss.provider == "anthropic":
+        ep = SECRET_ENDPOINT
+    cur = ss.endpoint.strip()
+    if not cur or cur in defaults:
         ss.endpoint = ep
-    if not ss.model_id.strip() or ss.model_id in defaults:
+    else:   # endpoint ที่ตั้งเอง: เก็บโดเมนไว้ ตัด path ของแบบเดิมออก (เช่น /v1/chat/completions)
+        base = cur.rstrip("/")
+        for _ in range(3):
+            for tail in ("/chat/completions", "/messages", "/v1"):
+                if base.endswith(tail):
+                    base = base[: -len(tail)].rstrip("/")
+        ss.endpoint = base or ep
+    m = ss.model_id.strip()
+    if not m or m in defaults or (ss.provider == "anthropic" and not m.startswith("claude")):
         ss.model_id = md
     ss.model_list = []
 
@@ -88,17 +157,38 @@ with st.sidebar:
     st.subheader("Cloud API")
     st.radio("แบบ API", list(PROVIDERS), format_func=PROVIDERS.get, key="provider", horizontal=True,
              on_change=_switch_provider,
-             help="Claude (Anthropic) = ใช้ API key จาก Claude Console (ส่งด้วย x-api-key)\n\n"
+             help="Claude (Anthropic) = ใช้ API key จาก Claude Console (ส่งด้วย Authorization: Bearer ถ้าไม่ผ่านจะลอง x-api-key ให้)\n\n"
                   "OpenAI-compatible = Gemini, OpenAI หรือ gateway ที่ใช้ /chat/completions (ส่งด้วย Bearer)")
     st.caption("ใส่แค่โดเมนก็ได้ ระบบเติม https:// และ path ให้ (Claude: /v1/messages · OpenAI-compatible: /v1/chat/completions)")
     st.text_input("API endpoint", key="endpoint")
     st.text_input("Model ID", key="model_id")
+    # ---- API key อยู่ได้นานสุด 12 ชม. แล้วลบทิ้งอัตโนมัติ (เช็คทุกครั้งก่อนเรียก AI) ----
+    now = time.time()
+    if ss.get("api_key_in", "").strip() and not ss.get("api_key_at"):
+        ss.api_key_at = now
+    if ss.get("api_key_in") and now - (ss.get("api_key_at") or now) > KEY_TTL:
+        _clear_key()
+        st.warning(f"API key ถูกลบอัตโนมัติแล้ว (ครบ {KEY_TTL_HOURS} ชม.) ใส่ใหม่ถ้าจะใช้ต่อ")
+    if ss.saved["api_key"] and now - (ss.saved.get("api_key_saved_at") or 0) > KEY_TTL:
+        forget_key()
+        ss.saved["api_key"] = ""
     saved_key = ss.saved["api_key"]
-    api_key_in = st.text_input("API key", type="password",
-                               placeholder="ตั้งค่าแล้ว — เว้นว่างเพื่อใช้ key เดิม" if saved_key else "วาง API key")
-    api_key = api_key_in.strip() or saved_key
+    sys_status = _secret_status()
+    secret_ok = sys_status == "ok" and ss.provider == "anthropic" and _host(ss.endpoint) == _host(SECRET_ENDPOINT)
+    st.text_input("API key", type="password", key="api_key_in", on_change=_key_changed,
+                  placeholder="ตั้งค่าแล้ว — เว้นว่างเพื่อใช้ key เดิม" if saved_key
+                  else "ใช้ key ของระบบอยู่ — เว้นว่างได้" if secret_ok else "วาง API key")
+    typed = ss.api_key_in.strip()
+    using_secret = not typed and not saved_key and secret_ok
+    api_key = typed or saved_key or (SECRET_KEY if using_secret else "")
+    if typed:
+        left = max(0.0, KEY_TTL - (now - (ss.get("api_key_at") or now)))
+        st.caption(f"key อยู่แค่ในหน้านี้ ปิดหน้าแล้วหายทันที และจะถูกลบอัตโนมัติในอีกประมาณ "
+                   f"{int(left // 3600)} ชม. {int(left % 3600 // 60)} นาที")
+        st.button("ลบ key ออกตอนนี้", on_click=_clear_key, width="stretch")
+    model_now = SECRET_MODEL if using_secret else ss.model_id
     # ไม่มี key ก็ส่ง conn ไปได้ (core จะใช้โหมดเดโม แต่ยังใช้คำลงท้ายตามร้าน)
-    conn = {"provider": ss.provider, "endpoint": ss.endpoint, "model": ss.model_id, "api_key": api_key,
+    conn = {"provider": ss.provider, "endpoint": ss.endpoint, "model": model_now, "api_key": api_key,
             "shop": shop_now()}
 
     c1, c2 = st.columns(2)
@@ -130,21 +220,31 @@ with st.sidebar:
 
     if st.button("บันทึกการเชื่อมต่อ", type="primary", width="stretch"):
         try:
-            key_saved = save_config(ss.endpoint, ss.model_id, api_key_in.strip() or None, ss.provider)
+            key_saved = save_config(ss.endpoint, ss.model_id, typed or None, ss.provider)
             ss.saved = load_config()
             st.success("บันทึกแล้ว" + ("" if key_saved else " (ไม่ได้บันทึก key)"))
         except Exception as e:
             st.error(f"บันทึกไม่ได้: {e}")
-    st.caption("บันทึก endpoint และโมเดลไว้ในเครื่อง พร้อมเข้ารหัส API key ด้วยบัญชี Windows นี้ เปิดโปรแกรมใหม่ไม่ต้องใส่ซ้ำ"
-               if IS_WINDOWS else "บันทึก endpoint และโมเดลไว้ในเครื่อง (API key จะไม่ถูกบันทึกบน OS นี้)")
+    st.caption(f"บันทึก endpoint และโมเดลไว้ในเครื่อง พร้อมเข้ารหัส API key ด้วยบัญชี Windows นี้ (key ลบอัตโนมัติหลัง {KEY_TTL_HOURS} ชม.)"
+               if IS_WINDOWS else "บันทึก endpoint และโมเดลไว้ในเครื่อง (API key ไม่ถูกบันทึก ต้องใส่ใหม่ทุกครั้งที่เปิดเว็บ)")
 
     st.divider()
     workers = st.slider("จำนวนคำขอพร้อมกัน", 1, 8, 4,
                         help="มากขึ้น = เร็วขึ้น แต่ถ้า API มีลิมิตต่ำ (เช่น Gemini ฟรี) อาจโดน rate limit ให้ลดลง")
     if api_key:
-        st.info(f"ใช้: `{ss.model_id}` · {PROVIDERS[ss.provider]}\n\n{normalize_endpoint(ss.endpoint, ss.provider)}")
+        st.info(f"ใช้: `{model_now}` · {PROVIDERS[ss.provider]}" + (" · key ของระบบ" if using_secret else "")
+                + f"\n\n{normalize_endpoint(ss.endpoint, ss.provider)}")
+        if using_secret:
+            st.caption(f"key ของระบบใช้ได้ถึง {SECRET_UNTIL:%d/%m/%Y %H:%M} น. · ล็อกโมเดลเป็น {SECRET_MODEL} "
+                       f"· วิเคราะห์ได้ครั้งละไม่เกิน {SECRET_MAX_REVIEWS} รีวิว")
     else:
         st.warning("โหมดเดโม: ยังไม่มี API key (ไม่ใช่ AI จริง)")
+        sys_msg = {"ok": f"key ของระบบใช้ได้เฉพาะแบบ Claude ที่ {_host(SECRET_ENDPOINT)} (ไม่ส่ง key ไป endpoint อื่น)",
+                   "expired": "key ของระบบหมดเวลาแล้ว ระบบเลิกใช้ key นั้นแล้ว",
+                   "no-until": "key ของระบบปิดอยู่: ต้องตั้ง ANTHROPIC_KEY_UNTIL ใน Secrets",
+                   "too-long": f"key ของระบบปิดอยู่: ตั้งเวลาหมดอายุได้ไม่เกิน {KEY_TTL_HOURS} ชม. จากตอนนี้"}.get(sys_status)
+        if sys_msg:
+            st.caption(sys_msg)
 
 # ---------------- header ----------------
 hero(shop_now()["name"], ss.shop_tone)
@@ -191,8 +291,10 @@ with tab_up:
                    + (" (มีป้ายคำตอบ ใช้วัดความแม่นยำได้)" if "label" in ss.src.columns else ""))
         with st.expander("ดูตัวอย่างข้อมูล"):
             st.dataframe(ss.src.head(20), width="stretch", hide_index=True)
-        n = st.number_input("จำนวนรีวิวที่จะวิเคราะห์", 1, n_all, min(n_all, 50),
-                            help="ไฟล์ใหญ่ ๆ ลองทีละน้อยก่อน จะได้ไม่เปลือง API")
+        n_max = min(n_all, SECRET_MAX_REVIEWS) if using_secret else n_all
+        n = st.number_input("จำนวนรีวิวที่จะวิเคราะห์", 1, n_max, min(n_max, 50),
+                            help="ไฟล์ใหญ่ ๆ ลองทีละน้อยก่อน จะได้ไม่เปลือง API"
+                                 + (f" · ใช้ key ของระบบได้ครั้งละไม่เกิน {SECRET_MAX_REVIEWS} รีวิว" if using_secret else ""))
         est = n * 4 / max(1, workers)
         st.caption(f"ใช้เวลาประมาณ {est:.0f}–{est * 2:.0f} วินาที (ขึ้นกับความเร็วของ API) · เรียก AI {n} ครั้ง")
         if st.button("เริ่มวิเคราะห์", type="primary"):
