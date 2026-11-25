@@ -23,7 +23,7 @@ AUTH_MODES = ("bearer", "x-api-key")  # Bearer = วิธีหลัก, x-api
 _working = {}                         # host -> (auth, version) ที่ใช้ได้แล้ว จะได้ไม่ต้องลองใหม่ทุกครั้ง
 PROVIDERS = {"anthropic": "Claude (Anthropic)", "openai": "OpenAI-compatible"}
 PROVIDER_DEFAULTS = {"anthropic": (ANTHROPIC_ENDPOINT, ANTHROPIC_MODEL), "openai": (DEFAULT_ENDPOINT, DEFAULT_MODEL)}
-MAX_TOKENS = 1024
+MAX_TOKENS = 2048   # เผื่อคำตอบภาษาไทยยาว ๆ ไม่ให้ขาดกลางคัน
 ASPECTS = ["quality", "shipping", "packaging", "price", "service", "other"]
 URGENCY_ORDER = {"high": 0, "medium": 1, "low": 2}
 TIMEOUT = 45          # วินาทีต่อคำขอ
@@ -245,7 +245,10 @@ def analyze_review(conn: dict | None, text: str, rating=None, temperature: float
             return {**_normalize(_clean_json(content)), "error": False}
         except requests.Timeout:
             last_err = RuntimeError(f"timeout เกิน {TIMEOUT} วินาที")
-        except Exception as e:  # JSON เพี้ยน / key ผิด ฯลฯ -> ไม่ต้องลองซ้ำ
+        except (ValueError, KeyError) as e:  # คำตอบขาด / JSON เพี้ยน -> ถามใหม่
+            last_err = e
+            continue
+        except Exception as e:  # key ผิด ฯลฯ -> ไม่ต้องลองซ้ำ
             last_err = e
             break
     out = _mock(text, _particle(conn))
